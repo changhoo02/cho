@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-1단계: 직원 명단 -> 사람마다 고유 토큰/링크 생성 -> 매핑표(텍스트) 저장
+1단계: 직원 명단 -> 사람마다 고유 토큰/링크 생성
 
 사용법:
   1) employees.txt 파일에 전 직원의 "이메일,이름,팀"을 한 줄에 한 명씩 적는다.
@@ -8,20 +8,15 @@
      '#'으로 시작하는 줄과 빈 줄은 무시된다.
   2) BASE_URL을 실제 쓸 도메인으로 바꾼다.
   3) python3 generate_links.py 실행.
-  4) mapping_internal.txt(보안팀 전용, 토큰<->이름 연결 포함)와
+  4) employees.txt에 "이메일,이름,팀,고유코드" 형태로 그 사람의 고유코드가
+     팀 뒤에 자동으로 채워져 저장되고(스크립트가 실행마다 덮어씀. 직접 수정하지 말 것),
      mailmerge_send_list.csv(메일 발송용, 이메일/이름/링크만)가 생성된다.
-  5) employees.txt에도 "이메일,이름,팀,고유코드" 형태로 그 사람의 고유코드가
-     팀 뒤에 자동으로 채워져 저장된다(스크립트가 실행마다 덮어씀. 직접 수정하지 말 것).
 
-이 매핑표는 보안팀만 보관합니다. 메일 발송 자체는 이 스크립트가 하지 않고,
-mailmerge_send_list.csv를 Outlook/M365 메일 병합이나 다른 발송 도구에 넣어 사용합니다.
 
-토큰은 이메일별로 고정된다: mapping_internal.txt에 이미 그 이메일의 토큰이 있으면
-재실행해도 그대로 재사용하고, 새로 추가된 직원에게만 새 토큰을 발급한다. 이렇게 하면
-재실행/재배포 때마다 토큰이 바뀌어 push_mapping.py를 다시 올리지 않으면 서버 로그에
-"알 수 없는 토큰"이 찍히는 동기화 문제를 막을 수 있다. (링크 추측을 막기 위해 순번은
-여전히 쓰지 않는다 - 순번은 /v/1, /v/2처럼 다른 사람 링크를 추측할 수 있게 해서
-훈련 결과를 오염시킬 수 있음)
+토큰은 이메일별로 고정된다: employees.txt에 이미 그 이메일의 고유코드가 있으면
+재실행해도 그대로 재사용하고, 새로 추가된 직원에게만 새 토큰을 발급한다. (링크 추측을
+막기 위해 순번은 쓰지 않는다 - 순번은 /v/1, /v/2처럼 다른 사람 링크를 추측할 수 있게
+해서 훈련 결과를 오염시킬 수 있음)
 """
 import csv
 import os
@@ -70,17 +65,6 @@ def make_token() -> str:
     return secrets.token_urlsafe(8)  # 예: 'Qk3F9z1xN2A'
 
 
-def load_existing_tokens(path):
-    """
-    이전에 생성된 mapping_internal.txt에서 "이메일 -> 토큰"을 읽어온다.
-    파일이 없으면 빈 딕셔너리를 반환한다(최초 실행).
-    """
-    if not os.path.exists(path):
-        return {}
-    with open(path, encoding="utf-8") as f:
-        return {row["email"]: row["token"] for row in csv.DictReader(f)}
-
-
 def rewrite_employees_file(path, rows):
     """
     employees.txt를 다시 써서 "이메일,이름,팀,고유코드" 형태로 고유코드를 채워 넣는다.
@@ -109,14 +93,13 @@ def main():
     if not employees:
         raise SystemExit(f"{EMPLOYEES_FILE}에 직원이 한 명도 없습니다. 직원 명단을 채워주세요.")
 
-    # 토큰 우선순위: employees.txt에 이미 적혀 있는 고유코드 -> 이전 mapping_internal.txt
-    # -> 둘 다 없으면 새로 발급. (재실행해도 같은 사람은 같은 토큰을 유지한다)
-    mapping_tokens = load_existing_tokens("mapping_internal.txt")
-    used_tokens = set(mapping_tokens.values()) | {t for *_, t in employees if t}
+    # 토큰 우선순위: employees.txt에 이미 적혀 있는 고유코드 -> 없으면 새로 발급.
+    # (재실행해도 같은 사람은 같은 토큰을 유지한다)
+    used_tokens = {t for *_, t in employees if t}
     reused = 0
     rows = []
     for email, name, team, existing_token in employees:
-        token = existing_token or mapping_tokens.get(email)
+        token = existing_token
         if token:
             reused += 1
         else:
@@ -136,15 +119,6 @@ def main():
 
     rewrite_employees_file(EMPLOYEES_FILE, rows)
 
-    # ---- 보안팀 전용 매핑표 (텍스트 파일) ----
-    # link를 맨 마지막 컬럼에 둔다: 메모장 등에서 줄 끝까지 긁어 복사해도
-    # link 뒤에 다른 값이 붙어서 토큰이 오염되는 실수를 막기 위함.
-    with open("mapping_internal.txt", "w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerow(["email", "name", "team", "token", "link"])
-        for r in rows:
-            w.writerow([r["email"], r["name"], r["team"], r["token"], r["link"]])
-
     # ---- 발송용 CSV (메일 병합에 사용, 토큰 없이 링크만) ----
     with open("mailmerge_send_list.csv", "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
@@ -153,8 +127,7 @@ def main():
             w.writerow([r["email"], r["name"], r["link"]])
 
     print(f"총 {len(rows)}명 처리 완료. (기존 토큰 재사용 {reused}명, 신규 발급 {len(rows) - reused}명)")
-    print("생성 파일: mapping_internal.txt (보안팀 전용), mailmerge_send_list.csv (발송용)")
-    print("주의: 토큰이 이전과 같더라도, 서버(Render)에 이번 매핑을 다시 전달하려면 push_mapping.py를 실행하세요.")
+    print(f"생성/갱신 파일: {EMPLOYEES_FILE} (고유코드 채움), mailmerge_send_list.csv (발송용)")
 
 
 if __name__ == "__main__":
