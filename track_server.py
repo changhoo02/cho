@@ -26,7 +26,7 @@ app = Flask(__name__)
 logging.getLogger("werkzeug").setLevel(logging.ERROR)  # 기본 "GET /v/<토큰> 404" 로그 끄기
 
 CLICK_LOG_FILE = "clicks.txt"  # 쉼표로 구분된 순수 텍스트(csv 포맷), 확장자만 .txt
-MAPPING_FILE = "mapping_internal.txt"
+EMPLOYEES_FILE = "employees.txt"  # 직원 명단 + 고유코드 (이메일,이름,팀,고유코드)
 REPORT_FILE = "clicks_list.xlsx"
 LOG_EXTRA = False  # True로 바꾸면 user-agent도 같이 기록 (기본은 최소 수집)
 KST = timezone(timedelta(hours=9))
@@ -82,15 +82,32 @@ def generic_404(_e):
     return Response(NOT_FOUND_HTML, status=404, mimetype="text/html")
 
 
+@app.errorhandler(405)
+def generic_405(_e):
+    return Response(NOT_FOUND_HTML, status=404, mimetype="text/html")
+
+
 def _load_mapping():
-    if not os.path.exists(MAPPING_FILE):
-        print(f"[경고] {MAPPING_FILE} 없음 - 매핑 없이 시작합니다(클릭 로그는 정상 기록됨).", flush=True)
+    """
+    employees.txt(이메일,이름,팀,고유코드 / '#' 주석, 빈 줄 포함)를 읽어
+    매핑 리스트로 반환한다. 고유코드가 비어 있는 줄(아직 generate_links.py를
+    안 돌려서 코드가 없는 사람)은 매핑에서 건너뛴다.
+    """
+    if not os.path.exists(EMPLOYEES_FILE):
+        print(f"[경고] {EMPLOYEES_FILE} 없음 - 매핑 없이 시작합니다(클릭 로그는 정상 기록됨).", flush=True)
         return []
-    with open(MAPPING_FILE, encoding="utf-8") as f:
-        return [
-            {"email": row["email"], "name": row["name"], "team": row["team"], "token": row["token"]}
-            for row in csv.DictReader(f)
-        ]
+    mapping = []
+    with open(EMPLOYEES_FILE, encoding="utf-8-sig") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) < 4 or not parts[3]:
+                continue
+            email, name, team, token = parts[0], parts[1], parts[2], parts[3]
+            mapping.append({"email": email, "name": name, "team": team, "token": token})
+    return mapping
 
 
 def _load_first_clicks():
@@ -116,8 +133,8 @@ def _to_kst_parts(utc_iso: str):
 
 
 def generate_report():
-    """mapping_internal.txt + clicks.txt를 합쳐 clicks_list.xlsx를 만든다."""
-    mapping = _load_mapping()
+    """서버 시작 시 로드해둔 매핑(MAPPING_BY_TOKEN) + clicks.txt를 합쳐 clicks_list.xlsx를 만든다."""
+    mapping = list(MAPPING_BY_TOKEN.values()) if MAPPING_BY_TOKEN else _load_mapping()
     first_clicks = _load_first_clicks()
 
     total = len(mapping)
