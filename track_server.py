@@ -7,13 +7,19 @@
 - 로그인 정보나 그 외 입력값은 전혀 받지 않는다. (화면에 입력창 자체가 없음)
 - IP나 User-Agent 같은 부가 정보는 기본적으로 기록하지 않는다. 필요하면
   LOG_EXTRA = True 로 바꾸되, 꼭 필요한 최소 정보인지 먼저 검토할 것.
-- 훈련 기간이 끝나면 이 서버를 Ctrl+C로 종료한다. 종료되는 순간
-   clicks_list.xlsx 결과 파일을 만든다. (clicks.txt는 삭제)
+- 서버 시작 시 같은 폴더의 employees.txt(이메일,이름,팀,고유코드 - generate_links.py가
+  만들어주는 형식)를 읽어 토큰<->이름/이메일 매핑을 메모리에 올려둔다. 이 파일이 없으면
+  매핑 없이 시작하며, 클릭 로그 자체는 그래도 정상 기록되지만 콘솔에는
+  "알 수 없는 토큰"으로만 찍힌다.
+- 클릭이 발생하면 콘솔에 "[클릭] 시각 - 이름 (이메일)" 형태로 바로 출력된다.
+
 
 실행:
   pip install flask openpyxl   (이미 설치돼 있으면 생략)
   python3 track_server.py
   (훈련 기간 종료 후 Ctrl+C -> clicks_list.xlsx 자동 생성)
+
+
 """
 import csv
 import logging
