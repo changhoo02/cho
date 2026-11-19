@@ -12,6 +12,11 @@
   매핑 없이 시작하며, 클릭 로그 자체는 그래도 정상 기록되지만 콘솔에는
   "알 수 없는 토큰"으로만 찍힌다.
 - 클릭이 발생하면 콘솔에 "[클릭] 토큰" 형태로 바로 출력된다.
+
+
+
+
+
 """
 import csv
 import logging
@@ -24,11 +29,11 @@ app = Flask(__name__)
 logging.getLogger("werkzeug").setLevel(logging.ERROR)  # 기본 "GET /v/<토큰> 404" 로그 끄기
 
 CLICK_LOG_FILE = "clicks.txt"  # 쉼표로 구분된 순수 텍스트(csv 포맷), 확장자만 .txt
-TOKENS_FILE = "tokens.txt"  # 고유코드만 한 줄에 하나씩 (이름/이메일 없음)
+EMPLOYEES_FILE = "employees.txt"  # 직원 명단 + 고유코드 (이메일,이름,팀,고유코드)
 REPORT_FILE = "clicks_list.xlsx"
 LOG_EXTRA = False  # True로 바꾸면 user-agent도 같이 기록 (기본은 최소 수집)
 KST = timezone(timedelta(hours=9))
-KNOWN_TOKENS = []  # 서버 시작 시 채워짐: tokens.txt의 고유코드 목록 (순서 유지)
+MAPPING_BY_TOKEN = {}  # 서버 시작 시 채워짐: token -> {email, name, team}
 
 NOT_FOUND_HTML = """\
 <!doctype html>
@@ -65,10 +70,11 @@ def visit(token):
     _log_click(token, ua)
 
     now_kst = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
-    if token in KNOWN_TOKENS:
-        print(f"[클릭] {now_kst} - 코드: {token}", flush=True)
+    who = MAPPING_BY_TOKEN.get(token)
+    if who:
+        print(f"[클릭] {now_kst} - {who['name']} ({who['email']})", flush=True)
     else:
-        print(f"[클릭] {now_kst} - 알 수 없는 코드: {token}", flush=True)
+        print(f"[클릭] {now_kst} - 알 수 없는 토큰: {token}", flush=True)
 
     return Response(NOT_FOUND_HTML, status=404, mimetype="text/html")
 
@@ -84,22 +90,27 @@ def generic_405(_e):
     return Response(NOT_FOUND_HTML, status=404, mimetype="text/html")
 
 
-def _load_tokens():
+def _load_mapping():
     """
-    tokens.txt(고유코드만 한 줄에 하나씩 / '#' 주석, 빈 줄 무시)를 읽어
-    고유코드 목록을 순서 그대로 반환한다. 이름/이메일은 이 파일에 없다.
+    employees.txt(이메일,이름,팀,고유코드 / '#' 주석, 빈 줄 포함)를 읽어
+    매핑 리스트로 반환한다. 고유코드가 비어 있는 줄(아직 generate_links.py를
+    안 돌려서 코드가 없는 사람)은 매핑에서 건너뛴다.
     """
-    if not os.path.exists(TOKENS_FILE):
-        print(f"[경고] {TOKENS_FILE} 없음 - 코드 목록 없이 시작합니다(클릭 로그는 정상 기록됨).", flush=True)
+    if not os.path.exists(EMPLOYEES_FILE):
+        print(f"[경고] {EMPLOYEES_FILE} 없음 - 매핑 없이 시작합니다(클릭 로그는 정상 기록됨).", flush=True)
         return []
-    tokens = []
-    with open(TOKENS_FILE, encoding="utf-8-sig") as f:
+    mapping = []
+    with open(EMPLOYEES_FILE, encoding="utf-8-sig") as f:
         for raw_line in f:
             line = raw_line.strip()
             if not line or line.startswith("#"):
                 continue
-            tokens.append(line)
-    return tokens
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) < 4 or not parts[3]:
+                continue
+            email, name, team, token = parts[0], parts[1], parts[2], parts[3]
+            mapping.append({"email": email, "name": name, "team": team, "token": token})
+    return mapping
 
 
 def _load_first_clicks():
@@ -125,34 +136,30 @@ def _to_kst_parts(utc_iso: str):
 
 
 def generate_report():
-    """
-    서버 시작 시 로드해둔 코드 목록(KNOWN_TOKENS) + clicks.txt를 합쳐 clicks_list.xlsx를 만든다.
-    이름/이메일은 서버가 모르므로 결과 파일에는 고유코드만 들어간다.
-    누가 클릭했는지는 이 파일을 받은 뒤 로컬 employees.txt와 고유코드로 직접 대조한다.
-    """
-    tokens = KNOWN_TOKENS if KNOWN_TOKENS else _load_tokens()
+    """서버 시작 시 로드해둔 매핑(MAPPING_BY_TOKEN) + clicks.txt를 합쳐 clicks_list.xlsx를 만든다."""
+    mapping = list(MAPPING_BY_TOKEN.values()) if MAPPING_BY_TOKEN else _load_mapping()
     first_clicks = _load_first_clicks()
 
-    total = len(tokens)
+    total = len(mapping)
     clicked_n = 0
     data_rows = []
-    for token in tokens:
-        clicked_at_utc = first_clicks.get(token)
+    for m in mapping:
+        clicked_at_utc = first_clicks.get(m["token"])
         clicked_date, clicked_time = _to_kst_parts(clicked_at_utc)
         clicked = "Y" if clicked_at_utc else "N"
         if clicked == "Y":
             clicked_n += 1
-        data_rows.append([token, clicked, clicked_date, clicked_time])
+        data_rows.append([m["email"], m["name"], m["team"], clicked, clicked_date, clicked_time])
 
     wb = Workbook()
     ws = wb.active
     ws.title = "clicks_list"
     ws.append([f"총 {total}명 중 {clicked_n}명 클릭"])
     ws.append([])
-    ws.append(["고유코드", "클릭여부", "클릭날짜(KST)", "클릭시각(KST)"])
+    ws.append(["email", "name", "team", "클릭여부", "클릭날짜(KST)", "클릭시각(KST)"])
     for row in data_rows:
         ws.append(row)
-    for col, width in zip("ABCD", (16, 10, 14, 12)):
+    for col, width in zip("ABCDEF", (28, 12, 12, 10, 14, 12)):
         ws.column_dimensions[col].width = width
 
     wb.save(REPORT_FILE)
@@ -165,8 +172,8 @@ def generate_report():
 
 if __name__ == "__main__":
     _ensure_header()
-    KNOWN_TOKENS = _load_tokens()
-    print(f"고유코드 {len(KNOWN_TOKENS)}개 로드 완료. 클릭이 발생하면 코드만 출력합니다.")
+    MAPPING_BY_TOKEN = {m["token"]: m for m in _load_mapping()}
+    print(f"매핑 {len(MAPPING_BY_TOKEN)}명 로드 완료. 클릭이 발생하면 이름/이메일을 바로 출력합니다.")
     try:
         # Render 등 PaaS는 PORT 환경변수로 쓸 포트를 알려준다. 로컬 테스트 시엔 8080 사용.
         port = int(os.environ.get("PORT", 8080))
