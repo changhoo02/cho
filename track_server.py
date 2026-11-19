@@ -60,6 +60,12 @@ def visit(token):
     return Response(NOT_FOUND_HTML, status=404, mimetype="text/html")
 
 
+@app.route("/healthz")
+def healthz():
+    """잠들지 않게 깨워주는 핑(keep-alive)용 주소. 클릭 기록은 전혀 남기지 않는다."""
+    return Response("ok", status=200, mimetype="text/plain")
+
+
 @app.route("/results/<key>")
 def show_results(key):
     """브라우저에서 결과를 확인하는 보호된 주소. 키가 틀리면 똑같은 404를 보여준다."""
